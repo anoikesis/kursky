@@ -1,4 +1,4 @@
-var log = require('bookrc');
+// var log = require('bookrc');
 var express = require('express');
 var tldjs = require('tldjs');
 var on_finished = require('on-finished');
@@ -13,7 +13,7 @@ var proxy = http_proxy.createProxyServer({
 });
 
 proxy.on('error', function(err) {
-    log.error(err);
+    console.error(err);
 });
 
 proxy.on('proxyReq', function(proxyReq, req, res, options) {
@@ -30,13 +30,14 @@ var PRODUCTION = process.env.NODE_ENV === 'production';
 
 // id -> client http server
 var clients = Object.create(null);
+var clients_set = false;
 
 // proxy statistics
 var stats = {
     tunnels: 0
 };
 
-function maybe_bounce(req, res, sock, head) {
+function maybe_bounce(req, res, sock, head, opt) {
     // without a hostname, we won't know who the request is for
     var hostname = req.headers.host;
     if (!hostname) {
@@ -44,11 +45,21 @@ function maybe_bounce(req, res, sock, head) {
     }
 
     var subdomain = tldjs.getSubdomain(hostname);
+
+
     if (!subdomain) {
         return false;
     }
 
     var client_id = subdomain;
+
+    var client = clients[client_id];
+    var socket_count = ((client || {}).sockets || []).length;
+    if(subdomain && !socket_count){
+        delete clients[client_id];
+        --stats.tunnels;
+        return false;
+    }
     var client = clients[client_id];
 
     // no such subdomain
@@ -149,7 +160,7 @@ function new_client(id, opt, cb) {
     // can't ask for id already is use
     // TODO check this new id again
     if (clients[id]) {
-        id = rand_id();
+        // id = rand_id();
     }
 
     var popt = {
@@ -164,6 +175,7 @@ function new_client(id, opt, cb) {
 
         ++stats.tunnels;
         clients[id] = client;
+        clients_set = true;
 
         info.id = id;
 
@@ -188,8 +200,14 @@ module.exports = function(opt) {
             return next();
         }
 
-        var req_id = rand_id();
-        debug('making new client with id %s', req_id);
+        var req_id = req.params.req_id;
+
+        var subdomain = tldjs.getSubdomain(req.headers.host);
+        if(subdomain){
+            req_id += "." + subdomain;
+        }
+        console.log('making new client with id %s', req_id);
+
         new_client(req_id, opt, function(err, info) {
             if (err) {
                 res.statusCode = 500;
@@ -216,21 +234,27 @@ module.exports = function(opt) {
 
     app.get('/:req_id', function(req, res, next) {
         var req_id = req.params.req_id;
+        var orig_req = null;
 
         // limit requested hostnames to 20 characters
-        if (! /^[a-z0-9]{4,20}$/.test(req_id)) {
-            var err = new Error('Invalid subdomain. Subdomains must be lowercase and between 4 and 20 alphanumeric characters.');
+        if (! /^[a-z0-9]{3,20}$/.test(req_id)) {
+            var err = new Error('Invalid subdomain. Subdomains must be lowercase and between 3 and 20 alphanumeric characters.');
             err.statusCode = 403;
             return next(err);
         }
 
         debug('making new client with id %s', req_id);
+        var subdomain = tldjs.getSubdomain(req.headers.host);
+        if(subdomain){
+            orig_req = req_id;
+            req_id += "." + subdomain;
+        }
         new_client(req_id, opt, function(err, info) {
             if (err) {
                 return next(err);
             }
 
-            var url = schema + '://' + req_id + '.' + req.headers.host;
+            var url = schema + '://' + orig_req + '.' + req.headers.host;
             info.url = url;
             res.json(info);
         });
@@ -248,7 +272,7 @@ module.exports = function(opt) {
 
     server.on('request', function(req, res) {
         debug('request %s', req.url);
-        if (maybe_bounce(req, res, null, null)) {
+        if (maybe_bounce(req, res, null, null, opt)) {
             return;
         };
 
@@ -256,7 +280,7 @@ module.exports = function(opt) {
     });
 
     server.on('upgrade', function(req, socket, head) {
-        if (maybe_bounce(req, null, socket, head)) {
+        if (maybe_bounce(req, null, socket, head, opt)) {
             return;
         };
 

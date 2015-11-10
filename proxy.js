@@ -31,29 +31,21 @@ var Proxy = function(opt, cb) {
     });
 
     // track initial user connection setup
-    var conn_timeout;
 
-    // user has 5 seconds to connect before their slot is given up
-    function maybe_tcp_close() {
-        clearTimeout(conn_timeout);
-        conn_timeout = setTimeout(function() {
-
-            // sometimes the server is already closed but the event has not fired?
-            try {
-                clearTimeout(conn_timeout);
-                client_server.close();
-            } catch (err) {
-                cleanup();
-            }
-        }, 5000);
+    // user has 0.5 seconds to connect before their slot is given up
+    function tcp_close() {
+        // sometimes the server is already closed but the event has not fired?
+        try {
+            client_server.close();
+        } catch (err) {
+            cleanup();
+        }
     }
 
-    maybe_tcp_close();
+    tcp_close();
 
     function cleanup() {
         debug('closed tcp socket for client(%s)', id);
-
-        clearTimeout(conn_timeout);
 
         // clear waiting by ending responses, (requests?)
         self.waiting.forEach(function(waiting) {
@@ -73,10 +65,9 @@ var Proxy = function(opt, cb) {
             return socket.end();
         }
 
-        debug('new connection on port: %s', id);
+        //debug('new connection on port: %s', id);
 
         // a single connection is enough to keep client id slot open
-        clearTimeout(conn_timeout);
 
         socket.once('close', function(had_error) {
             debug('client %s closed socket (error: %s)', id, had_error);
@@ -96,7 +87,7 @@ var Proxy = function(opt, cb) {
             // no more sockets for this ident
             if (self.sockets.length === 0) {
                 debug('all client(%s) sockets disconnected', id);
-                maybe_tcp_close();
+                tcp_close();
             }
         });
 
